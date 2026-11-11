@@ -7,8 +7,10 @@ import com.opspilot.config.OpsPilotProperties;
 import com.opspilot.event.EventService;
 import com.opspilot.idempotency.IdempotencyService;
 import com.opspilot.run.PaymentSubmitter;
+import com.opspilot.run.RunExecutor;
 import com.opspilot.run.RunService;
 import com.opspilot.run.RunStore;
+import com.opspilot.run.RunWorker;
 import com.opspilot.store.StoreConfig;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -23,10 +25,14 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.task.SyncTaskExecutor;
+import org.springframework.core.task.TaskExecutor;
 
 /**
  * 真实 MySQL 集成测试用的最小上下文：数据源、Flyway、MyBatis-Plus、事务 + 业务服务，
  * 业务系统换成 {@link FakeGateway}（可控的故障、可统计请求次数），不启动 Web 层。
+ * 执行线程池换成同步执行器：dispatch 之后当前线程直接跑完，测试结果是确定的；
+ * 恢复扫描不定时运行，由测试手动调 {@code RunWorker.recoverOnce()}。
  */
 @Configuration
 @ImportAutoConfiguration({
@@ -40,12 +46,17 @@ import org.springframework.context.annotation.Import;
 })
 @EnableConfigurationProperties(OpsPilotProperties.class)
 @Import({StoreConfig.class, JsonCodec.class, RunStore.class, EventService.class, IdempotencyService.class,
-        PaymentSubmitter.class, RunService.class, ApprovalService.class})
+        PaymentSubmitter.class, RunExecutor.class, RunWorker.class, RunService.class, ApprovalService.class})
 public class ItConfig {
 
     @Bean
     public FakeGateway fakeGateway() {
         return new FakeGateway();
+    }
+
+    @Bean("runTaskExecutor")
+    public TaskExecutor runTaskExecutor() {
+        return new SyncTaskExecutor();
     }
 
     @Bean

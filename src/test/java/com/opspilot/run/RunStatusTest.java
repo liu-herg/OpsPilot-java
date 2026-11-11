@@ -1,5 +1,6 @@
 package com.opspilot.run;
 
+import com.opspilot.config.OpsPilotProperties;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,8 +33,9 @@ class RunStatusTest {
     }
 
     @Test
-    void onlyNonTerminalNonWaitingStatesAreRecoverable() {
-        assertThat(RunStatus.QUEUED.isRecoverable()).isTrue();
+    void onlyStatesThatNeedAnExecutorAreRecoverable() {
+        // 用户还没点启动
+        assertThat(RunStatus.QUEUED.isRecoverable()).isFalse();
         assertThat(RunStatus.RUNNING.isRecoverable()).isTrue();
         assertThat(RunStatus.READY_TO_SUBMIT.isRecoverable()).isTrue();
         // 等审批是在等人，不是卡住了
@@ -44,9 +46,21 @@ class RunStatusTest {
     @Test
     void runStoreRejectsIllegalTransitionBeforeTouchingDatabase() {
         // mapper 传 null：如果真的走到数据库会 NPE，这里应该先抛 IllegalStateException
-        RunStore store = new RunStore(null);
+        RunStore store = new RunStore(null, new OpsPilotProperties(
+                new OpsPilotProperties.Systems("", "", "", 1000, 1000), 10000, 30,
+                new OpsPilotProperties.Chaos(false),
+                new OpsPilotProperties.Worker("", 60, 5000, 10, 4, 5)));
         assertThatThrownBy(() -> store.transition("run-x", RunStatus.WAITING_APPROVAL, RunUpdate.to(RunStatus.COMPLETED)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("WAITING_APPROVAL -> COMPLETED");
+    }
+
+    @Test
+    void backoffDoublesAndIsCappedAtFiveMinutes() {
+        assertThat(RunStore.backoffSeconds(0)).isEqualTo(5);
+        assertThat(RunStore.backoffSeconds(1)).isEqualTo(10);
+        assertThat(RunStore.backoffSeconds(3)).isEqualTo(40);
+        assertThat(RunStore.backoffSeconds(6)).isEqualTo(300);
+        assertThat(RunStore.backoffSeconds(50)).isEqualTo(300);
     }
 }

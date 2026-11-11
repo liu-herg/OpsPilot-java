@@ -7,6 +7,7 @@ import com.opspilot.gateway.PaymentRequest;
 import com.opspilot.gateway.PurchaseOrder;
 import com.opspilot.gateway.SubmitException;
 import com.opspilot.gateway.SubmitResult;
+import com.opspilot.gateway.UpstreamUnavailableException;
 
 import java.util.List;
 import java.util.Map;
@@ -38,6 +39,7 @@ public class FakeGateway implements BusinessSystemGateway {
     private final Map<String, List<Payment>> payments = new ConcurrentHashMap<>();
     private final Map<String, AtomicInteger> posts = new ConcurrentHashMap<>();
     private final Map<String, ConcurrentLinkedDeque<Failure>> failures = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> readFailures = new ConcurrentHashMap<>();
     private volatile long submitDelayMs;
 
     /** 登记一笔采购单 + 发票，返回发票号。 */
@@ -51,6 +53,11 @@ public class FakeGateway implements BusinessSystemGateway {
 
     public void failNextSubmit(String po, Failure failure) {
         failures.computeIfAbsent(po, k -> new ConcurrentLinkedDeque<>()).addLast(failure);
+    }
+
+    /** 接下来 times 次查询采购单时，采购系统"不可用"。 */
+    public void failReads(String po, int times) {
+        readFailures.put(po, new AtomicInteger(times));
     }
 
     /** 拉长"请求处理中"的窗口，让并发更容易撞上。 */
@@ -70,6 +77,10 @@ public class FakeGateway implements BusinessSystemGateway {
 
     @Override
     public Optional<PurchaseOrder> findOrder(String poNumber) {
+        AtomicInteger failures = readFailures.get(poNumber);
+        if (failures != null && failures.getAndUpdate(n -> n > 0 ? n - 1 : 0) > 0) {
+            throw new UpstreamUnavailableException("fake: 采购系统不可用", null);
+        }
         return Optional.ofNullable(fixtures.get(poNumber)).map(Fixture::order);
     }
 

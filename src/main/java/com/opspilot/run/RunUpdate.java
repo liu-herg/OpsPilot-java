@@ -15,6 +15,10 @@ public final class RunUpdate {
     private LocalDateTime startedAt;
     private LocalDateTime finishedAt;
     private LocalDateTime updatedAt;
+    private Integer retryAfterSeconds;
+    private boolean resetRetryCount;
+    private String leaseOwner;
+    private int leaseSeconds;
 
     private RunUpdate(RunStatus status) {
         this.status = status;
@@ -31,7 +35,13 @@ public final class RunUpdate {
     public RunUpdate clearRetryAt() { this.clearRetryAt = true; return this; }
     public RunUpdate started(LocalDateTime at) { this.startedAt = at; return this; }
     public RunUpdate finished(LocalDateTime at) { this.finishedAt = at; return this; }
+    /** 由数据库时钟计算下次重试时间（NOW() + seconds），并把 retry_count + 1。 */
+    public RunUpdate retryAfter(int seconds) { this.retryAfterSeconds = seconds; return this; }
+    public RunUpdate resetRetryCount() { this.resetRetryCount = true; return this; }
+    /** 以租约持有者身份转移：只有租约仍是 owner 的才能成功，成功同时续租。 */
+    public RunUpdate ownedBy(String owner) { this.leaseOwner = owner; return this; }
     RunUpdate updatedAt(LocalDateTime at) { this.updatedAt = at; return this; }
+    RunUpdate leaseSeconds(int seconds) { this.leaseSeconds = seconds; return this; }
 
     // 下面的 getter 给 MyBatis 读参数用
     public RunStatus getStatus() { return status; }
@@ -44,4 +54,8 @@ public final class RunUpdate {
     public LocalDateTime getStartedAt() { return startedAt; }
     public LocalDateTime getFinishedAt() { return finishedAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public Integer getRetryAfterSeconds() { return retryAfterSeconds; }
+    public boolean isResetRetryCount() { return resetRetryCount; }
+    public String getLeaseOwner() { return leaseOwner; }
+    public int getLeaseSeconds() { return leaseSeconds; }
 }

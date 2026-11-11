@@ -27,14 +27,17 @@ POST /tasks ──▶ 运行 QUEUED ──start──▶ 查采购单 ──▶ 
 | 付款请求超时，不知道付没付 | 不重试、不释放；下次先按业务键去财务系统**对账**，查到了就直接完成 |
 | 事件序号 | `UPDATE event_sequence = event_sequence + 1` 拿行锁分配序号，连续不重复 |
 | 远程调用拖住数据库 | HTTP 调用全部在事务外，事务里只做状态转移和写事件 |
+| 进程崩溃，运行卡住 | 执行租约（行级、状态转移即续租）+ 恢复扫描自动接手；启动时释放本实例上次留下的租约 |
+| 多实例重复执行 | 恢复扫描用 `FOR UPDATE SKIP LOCKED` 批量领取；状态写入带 `lease_owner` 校验（fencing） |
+| 外部系统暂时不可用 | 指数退避，`retry_at` / `retry_count` 持久化在库里，重启不丢 |
 
-设计说明和面试问答见 [`docs/P1-控制面.md`](docs/P1-控制面.md)。
+设计说明和面试问答：[`docs/P1-控制面.md`](docs/P1-控制面.md)、[`docs/P2-故障恢复.md`](docs/P2-故障恢复.md)。
 
 ## 运行
 
 ```powershell
 docker compose up -d --build
-.\scripts\demo.ps1            # 三个业务场景 + 故障注入演示
+.\scripts\demo.ps1            # 业务场景 + 故障注入（响应丢失、付款后进程崩溃）
 ```
 
 - 接口文档（OpenAPI JSON）：http://127.0.0.1:8090/v3/api-docs
@@ -44,14 +47,15 @@ docker compose up -d --build
 
 ```
 POST /tasks                         {"request": "帮我处理 PO-10001 的付款"}
-POST /runs/{id}/start               执行
-POST /runs/{id}/resume              继续提交停在 READY_TO_SUBMIT 的运行
+POST /runs/{id}/start               启动（202，后台执行）
+POST /runs/{id}/resume              不等退避时间，马上重试
 GET  /runs?status=&size=            列表
 GET  /runs/{id}                     详情
 GET  /runs/{id}/events?after=N      时间线（只返回序号 > N 的事件）
 GET  /approvals?status=PENDING      审批列表
 POST /approvals/{id}/decision       {"decision": "approve|reject", "actor": "finance-lead"}
 POST /chaos/drop-submit-response    故障注入：下一次付款响应丢弃（CHAOS_ENABLED=true 时可用）
+POST /chaos/crash-after-submit      故障注入：下一次付款成功后进程立即退出
 ```
 
 ### 测试
@@ -72,5 +76,6 @@ Java 21 · Spring Boot 3.5 · MyBatis-Plus · MySQL 8.4 · Flyway · Docker Comp
 ## 路线
 
 - [x] P1 控制面：状态机、审批事务、付款幂等与对账、事件时间线
-- [ ] P2 异步执行 + 启动恢复 + 多实例抢占（`SKIP LOCKED` / 租约）、事件实时推送
+- [x] P2 异步执行 + 故障恢复 + 多实例（租约、`SKIP LOCKED`、fencing、退避重试）
+- [ ] P2+ 事件实时推送（WebSocket + Redis Pub/Sub）
 - [ ] P3 消息队列解耦执行器、浏览器自动化执行器（Playwright）、工作流版本

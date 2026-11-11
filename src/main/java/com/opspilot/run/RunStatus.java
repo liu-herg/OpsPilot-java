@@ -46,8 +46,11 @@ public enum RunStatus {
         return ALLOWED.get(this).isEmpty();
     }
 
-    /** 进程崩溃后可以安全地继续执行的状态（P2 启动恢复会扫描这些状态）。 */
+    /**
+     * 需要后台执行者推进的状态：进程崩溃后，恢复扫描会接手这些状态里没人持有租约的运行。
+     * QUEUED 不算（用户还没点启动），WAITING_APPROVAL 也不算（在等人，不是卡住了）。
+     */
     public boolean isRecoverable() {
-        return this == QUEUED || this == RUNNING || this == READY_TO_SUBMIT;
+        return this == RUNNING || this == READY_TO_SUBMIT;
     }
 }

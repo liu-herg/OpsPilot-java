@@ -1,5 +1,7 @@
 server:
   port: ${SERVER_PORT:8080}
+  # 收到停止信号后先等正在处理的请求结束
+  shutdown: graceful
   servlet:
     encoding:
       charset: UTF-8
@@ -41,7 +43,15 @@ opspilot:
   approval-threshold: ${APPROVAL_THRESHOLD:10000}
   # 付款幂等租约：持有者在租约内崩溃，租约过期后其他执行者才能接手
   idempotency-lease-seconds: ${IDEMPOTENCY_LEASE_SECONDS:30}
-  # 故障注入（演示"响应丢失后对账"），生产环境不要开
+  # 后台执行与故障恢复
+  worker:
+    instance-id: ${INSTANCE_ID:}
+    lease-seconds: ${RUN_LEASE_SECONDS:60}
+    poll-interval-ms: ${RECOVERY_POLL_MS:5000}
+    batch-size: 10
+    threads: ${WORKER_THREADS:4}
+    max-read-retries: 5
+  # 故障注入（演示"响应丢失后对账"、"付款后进程崩溃"），生产环境不要开
   chaos:
     enabled: ${CHAOS_ENABLED:false}
 

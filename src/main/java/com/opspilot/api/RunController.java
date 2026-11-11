@@ -3,11 +3,13 @@ package com.opspilot.api;
 import com.opspilot.run.EventView;
 import com.opspilot.run.RunService;
 import com.opspilot.run.RunView;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -39,13 +41,16 @@ public class RunController {
         return runService.events(runId, after);
     }
 
+    /** 202：已经交给后台执行，用 GET /runs/{id} 或 /events 查看进度。 */
     @PostMapping("/{runId}/start")
+    @ResponseStatus(HttpStatus.ACCEPTED)
     public RunView start(@PathVariable String runId) {
         return runService.start(runId);
     }
 
-    /** 继续提交停在 READY_TO_SUBMIT 的运行（P2 由调度器自动做）。 */
+    /** 不等退避时间，马上重试（正常情况下恢复扫描会按 retry_at 自动重试）。 */
     @PostMapping("/{runId}/resume")
+    @ResponseStatus(HttpStatus.ACCEPTED)
     public RunView resume(@PathVariable String runId) {
         return runService.resume(runId);
     }

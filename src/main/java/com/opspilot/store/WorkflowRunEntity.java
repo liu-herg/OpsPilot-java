@@ -21,6 +21,9 @@ public class WorkflowRunEntity {
     private String errorMessage;
     private Integer eventSequence;
     private LocalDateTime retryAt;
+    private String leaseOwner;
+    private LocalDateTime leaseExpiresAt;
+    private Integer retryCount;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private LocalDateTime startedAt;
@@ -46,6 +49,12 @@ public class WorkflowRunEntity {
     public void setEventSequence(Integer eventSequence) { this.eventSequence = eventSequence; }
     public LocalDateTime getRetryAt() { return retryAt; }
     public void setRetryAt(LocalDateTime retryAt) { this.retryAt = retryAt; }
+    public String getLeaseOwner() { return leaseOwner; }
+    public void setLeaseOwner(String leaseOwner) { this.leaseOwner = leaseOwner; }
+    public LocalDateTime getLeaseExpiresAt() { return leaseExpiresAt; }
+    public void setLeaseExpiresAt(LocalDateTime leaseExpiresAt) { this.leaseExpiresAt = leaseExpiresAt; }
+    public Integer getRetryCount() { return retryCount; }
+    public void setRetryCount(Integer retryCount) { this.retryCount = retryCount; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }

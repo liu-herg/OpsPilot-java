@@ -73,7 +73,9 @@ public class HttpBusinessSystemGateway implements BusinessSystemGateway {
                             throw new SubmitException(SubmitException.Kind.OUTCOME_UNKNOWN, "响应丢失（故障注入）");
                         }
                         if (code == 200 || code == 201) {
-                            return new SubmitResult(res.bodyTo(Payment.class), code == 201);
+                            SubmitResult result = new SubmitResult(res.bodyTo(Payment.class), code == 201);
+                            chaos.crashIfArmed(request.poNumber());
+                            return result;
                         }
                         if (code >= 400 && code < 500) {
                             throw new SubmitException(SubmitException.Kind.REJECTED, "财务系统拒绝: HTTP " + code);

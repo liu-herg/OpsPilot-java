@@ -23,7 +23,8 @@ public class ChaosController {
 
     @GetMapping
     public Map<String, Object> status() {
-        return JsonCodec.fields("enabled", chaos.isEnabled(), "pending_submit_response_drops", chaos.pendingDrops());
+        return JsonCodec.fields("enabled", chaos.isEnabled(), "pending_submit_response_drops", chaos.pendingDrops(),
+                "crash_after_next_submit", chaos.crashArmed());
     }
 
     /** 接下来 times 次付款请求：财务系统正常处理，但响应被丢弃（模拟超时）。 */
@@ -33,6 +34,16 @@ public class ChaosController {
             throw new IllegalArgumentException("故障注入未开启，请用 CHAOS_ENABLED=true 启动应用");
         }
         chaos.dropNextSubmitResponses(times);
+        return status();
+    }
+
+    /** 下一次付款请求成功后，进程立即崩溃（容器配置了自动重启，重启后由故障恢复接手）。 */
+    @PostMapping("/crash-after-submit")
+    public Map<String, Object> crashAfterSubmit() {
+        if (!chaos.isEnabled()) {
+            throw new IllegalArgumentException("故障注入未开启，请用 CHAOS_ENABLED=true 启动应用");
+        }
+        chaos.crashAfterNextSubmit();
         return status();
     }
 }

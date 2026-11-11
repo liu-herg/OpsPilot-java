@@ -71,6 +71,8 @@ services:
   opspilot:
     build: {context: ., dockerfile: Dockerfile}
     container_name: opspilot-app
+    # 进程崩溃后自动重启（演示"付款后崩溃 → 重启 → 自动恢复"）
+    restart: unless-stopped
     ports:
       - "8090:8080"
     environment:

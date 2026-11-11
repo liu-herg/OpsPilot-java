@@ -21,6 +21,6 @@ public final class MySqlProps {
                 + "useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true");
         registry.add("spring.datasource.username", () -> System.getenv().getOrDefault("IT_MYSQL_USER", "opspilot"));
         registry.add("spring.datasource.password", () -> System.getenv().getOrDefault("IT_MYSQL_PASSWORD", "opspilot123"));
-        registry.add("spring.datasource.hikari.maximum-pool-size", () -> "30");
+        registry.add("spring.datasource.hikari.maximum-pool-size", () -> "25");
     }
 }

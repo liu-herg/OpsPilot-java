@@ -74,7 +74,8 @@ public class PaymentSubmitter {
         return "payment:" + poNumber + ":" + invoiceId;
     }
 
-    public void submit(String runId) {
+    /** 由 {@link RunExecutor} 在持有执行租约（owner）时调用。 */
+    public void submit(String runId, String owner) {
         WorkflowRunEntity run = runMapper.selectById(runId);
         if (run == null || !RunStatus.READY_TO_SUBMIT.name().equals(run.getStatus())) {
             return;
@@ -83,6 +84,7 @@ public class PaymentSubmitter {
         String po = (String) data.get("po_number");
         String invoiceId = (String) data.get("invoice_id");
         String key = idempotencyKey(po, invoiceId);
+        int retries = run.getRetryCount() == null ? 0 : run.getRetryCount();
 
         try {
             // 1. 上一次提交结果不明：先对账
@@ -90,7 +92,7 @@ public class PaymentSubmitter {
             if (existing != null && "PENDING".equals(existing.getStatus())) {
                 Optional<Payment> found = gateway.findPayment(po, invoiceId);
                 if (found.isPresent()) {
-                    complete(runId, data, key, found.get(), "payment.reconciled",
+                    complete(runId, owner, data, key, found.get(), "payment.reconciled",
                             fields("idempotency_key", key, "payment_id", found.get().id(),
                                     "note", "上次提交结果不明，对账发现付款已存在，不再重复提交"));
                     return;
@@ -101,11 +103,11 @@ public class PaymentSubmitter {
             ClaimResult claim = idempotency.claim(key, OPERATION, runId);
             switch (claim.outcome()) {
                 case COMPLETED -> {
-                    completeFromRecord(runId, data, key, claim.record());
+                    completeFromRecord(runId, owner, data, key, claim.record());
                     return;
                 }
                 case OCCUPIED -> {
-                    defer(runId, key, claim.record());
+                    defer(runId, owner, key, claim.record());
                     return;
                 }
                 default -> {
@@ -122,49 +124,50 @@ public class PaymentSubmitter {
                 result = gateway.submitPayment(new PaymentRequest(po, invoiceId, (String) data.get("supplier"),
                         ((Number) data.get("amount")).longValue(), COST_CENTER, REASON));
             } catch (SubmitException e) {
-                handleSubmitFailure(runId, key, e);
+                handleSubmitFailure(runId, owner, retries, key, e);
                 return;
             }
 
             // 4. 核实：按业务键回查，确认财务系统里真的有这笔
             Optional<Payment> verified = gateway.findPayment(po, invoiceId);
             if (verified.isEmpty()) {
-                events.append(runId, "submission.ambiguous", fields("idempotency_key", key,
+                retryLater(runId, owner, retries, "submission.ambiguous", fields("idempotency_key", key,
                         "reason", "提交返回成功，但回查不到付款；保留幂等记录，下次先对账"));
                 return;
             }
-            complete(runId, data, key, verified.get(),
+            complete(runId, owner, data, key, verified.get(),
                     result.created() ? "payment.submitted" : "payment.duplicate_suppressed",
                     fields("idempotency_key", key, "payment_id", verified.get().id(),
                             "created", result.created(),
                             "note", result.created() ? null : "财务系统里已有这笔付款，返回的是已有记录"));
         } catch (UpstreamUnavailableException e) {
-            // 对账或核实时查询失败：不改状态，等下次继续
+            // 对账或核实时查询失败：退避后再来
             log.warn("运行 {} 查询财务系统失败: {}", runId, e.getMessage());
-            events.append(runId, "submission.deferred", fields("idempotency_key", key, "reason", e.getMessage()));
+            retryLater(runId, owner, retries, "submission.deferred",
+                    fields("idempotency_key", key, "reason", e.getMessage()));
         }
     }
 
-    private void handleSubmitFailure(String runId, String key, SubmitException e) {
+    private void handleSubmitFailure(String runId, String owner, int retries, String key, SubmitException e) {
         switch (e.kind()) {
             case NOT_SENT -> {
-                // 请求没发出去：释放记录，下次可以直接重新提交，不用等租约过期
+                // 请求没发出去：释放记录，下次可以直接重新提交，不用等幂等租约过期
                 idempotency.release(key, runId);
-                events.append(runId, "submission.failed", fields("idempotency_key", key,
+                retryLater(runId, owner, retries, "submission.failed", fields("idempotency_key", key,
                         "retryable", true, "reason", e.getMessage()));
             }
             case OUTCOME_UNKNOWN -> {
-                // 对方可能已经付了：保留 PENDING 记录（和租约），运行留在 READY_TO_SUBMIT，下次先对账
-                IdempotencyRecordEntity record = idempotency.find(key);
-                events.append(runId, "submission.ambiguous", fields("idempotency_key", key,
-                        "reason", e.getMessage(),
-                        "lease_expires_at", record == null ? null : String.valueOf(record.getLeaseExpiresAt())));
+                // 对方可能已经付了：保留 PENDING 记录，运行留在 READY_TO_SUBMIT，下次先对账。
+                // 结果不明的付款不会自动放弃（只会把退避拉长到 5 分钟），需要配合告警人工介入
+                retryLater(runId, owner, retries, "submission.ambiguous", fields("idempotency_key", key,
+                        "reason", e.getMessage()));
             }
             case REJECTED -> {
                 idempotency.release(key, runId);
                 tx.executeWithoutResult(s -> {
                     if (runStore.transition(runId, RunStatus.READY_TO_SUBMIT, RunUpdate.to(RunStatus.FAILED)
-                            .error("PAYMENT_REJECTED", e.getMessage()).finished(LocalDateTime.now()).clearRetryAt())) {
+                            .error("PAYMENT_REJECTED", e.getMessage()).finished(LocalDateTime.now())
+                            .clearRetryAt().ownedBy(owner))) {
                         events.append(runId, "run.failed", fields("error_type", "PAYMENT_REJECTED",
                                 "message", e.getMessage()));
                     }
@@ -173,11 +176,23 @@ public class PaymentSubmitter {
         }
     }
 
-    /** 别人正在提交同一笔付款：记下租约到期时间，到时再试（P2 由调度器自动重试）。 */
-    private void defer(String runId, String key, IdempotencyRecordEntity record) {
+    /** 指数退避：运行留在 READY_TO_SUBMIT，retry_at 到了恢复扫描会自动再来。 */
+    private void retryLater(String runId, String owner, int retries, String eventType, Map<String, Object> payload) {
+        int delay = RunStore.backoffSeconds(retries);
+        payload.put("retry_in_seconds", delay);
         tx.executeWithoutResult(s -> {
             if (runStore.transition(runId, RunStatus.READY_TO_SUBMIT,
-                    RunUpdate.to(RunStatus.READY_TO_SUBMIT).retryAt(record.getLeaseExpiresAt()))) {
+                    RunUpdate.to(RunStatus.READY_TO_SUBMIT).retryAfter(delay).ownedBy(owner))) {
+                events.append(runId, eventType, payload);
+            }
+        });
+    }
+
+    /** 别人正在提交同一笔付款：等他的幂等租约到期再看（恢复扫描按 retry_at 自动重试）。 */
+    private void defer(String runId, String owner, String key, IdempotencyRecordEntity record) {
+        tx.executeWithoutResult(s -> {
+            if (runStore.transition(runId, RunStatus.READY_TO_SUBMIT,
+                    RunUpdate.to(RunStatus.READY_TO_SUBMIT).retryAt(record.getLeaseExpiresAt()).ownedBy(owner))) {
                 events.append(runId, "submission.deferred", fields("idempotency_key", key,
                         "owner_run_id", record.getOwnerRunId(),
                         "retry_at", String.valueOf(record.getLeaseExpiresAt())));
@@ -186,28 +201,30 @@ public class PaymentSubmitter {
     }
 
     /** 幂等记录已经完成：直接用保存的结果完成本运行，不发请求。 */
-    private void completeFromRecord(String runId, Map<String, Object> data, String key, IdempotencyRecordEntity record) {
+    private void completeFromRecord(String runId, String owner, Map<String, Object> data, String key,
+                                    IdempotencyRecordEntity record) {
         Map<String, Object> payment = json.readMap(record.getResult());
-        tx.executeWithoutResult(s -> finish(runId, data, payment, "payment.duplicate_suppressed",
+        tx.executeWithoutResult(s -> finish(runId, owner, data, payment, "payment.duplicate_suppressed",
                 fields("idempotency_key", key, "payment_id", payment.get("id"),
                         "note", "这笔付款已经由 " + record.getOwnerRunId() + " 完成，本次没有发请求")));
     }
 
-    private void complete(String runId, Map<String, Object> data, String key, Payment payment,
+    private void complete(String runId, String owner, Map<String, Object> data, String key, Payment payment,
                           String eventType, Map<String, Object> eventPayload) {
         Map<String, Object> paymentMap = json.toMap(payment);
         tx.executeWithoutResult(s -> {
             // 幂等记录完成和运行完成在同一个事务：不会出现"运行完成了，记录还是 PENDING"
             idempotency.complete(key, json.write(paymentMap));
-            finish(runId, data, paymentMap, eventType, eventPayload);
+            finish(runId, owner, data, paymentMap, eventType, eventPayload);
         });
     }
 
-    private void finish(String runId, Map<String, Object> data, Map<String, Object> payment,
+    private void finish(String runId, String owner, Map<String, Object> data, Map<String, Object> payment,
                         String eventType, Map<String, Object> eventPayload) {
         data.put("payment", payment);
         if (!runStore.transition(runId, RunStatus.READY_TO_SUBMIT, RunUpdate.to(RunStatus.COMPLETED)
-                .step("done").data(json.write(data)).clearRetryAt().finished(LocalDateTime.now()))) {
+                .step("done").data(json.write(data)).clearRetryAt().resetRetryCount()
+                .finished(LocalDateTime.now()).ownedBy(owner))) {
             return;
         }
         events.append(runId, eventType, eventPayload);
