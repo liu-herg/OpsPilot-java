@@ -1,0 +1,56 @@
+server:
+  port: ${SERVER_PORT:8080}
+  servlet:
+    encoding:
+      charset: UTF-8
+      # 响应头显式带上 charset=UTF-8；否则 Windows PowerShell 5.1 会按 Latin-1 解码中文
+      force-response: true
+
+spring:
+  application:
+    name: opspilot
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:opspilot}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USER:opspilot}
+    password: ${MYSQL_PASSWORD:opspilot123}
+    hikari:
+      maximum-pool-size: ${MYSQL_POOL_SIZE:20}
+      connection-timeout: 3000
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
+opspilot:
+  # 三个被自动化的业务系统（模拟）：采购、发票、财务
+  systems:
+    procurement-url: ${PROCUREMENT_URL:http://localhost:8101}
+    invoice-url: ${INVOICE_URL:http://localhost:8102}
+    finance-url: ${FINANCE_URL:http://localhost:8103}
+    connect-timeout-ms: 2000
+    read-timeout-ms: 5000
+  # 金额超过阈值的付款需要人工审批
+  approval-threshold: ${APPROVAL_THRESHOLD:10000}
+  # 付款幂等租约：持有者在租约内崩溃，租约过期后其他执行者才能接手
+  idempotency-lease-seconds: ${IDEMPOTENCY_LEASE_SECONDS:30}
+  # 故障注入（演示"响应丢失后对账"），生产环境不要开
+  chaos:
+    enabled: ${CHAOS_ENABLED:false}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics

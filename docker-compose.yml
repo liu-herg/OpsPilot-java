@@ -1,0 +1,94 @@
+# 项目名固定为 opspilot：网络名就是 opspilot_default（跑集成测试时要用）
+name: opspilot
+
+# 端口避开 PrismDesk（3316 / 6380 / 8002 / 8080 / 8081 / 9091），两个项目可以同时运行
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: opspilot-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
+      MYSQL_DATABASE: opspilot
+      MYSQL_USER: opspilot
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-opspilot123}
+      TZ: Asia/Shanghai
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci"]
+    ports:
+      - "${MYSQL_HOST_PORT:-3326}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # 必须走 TCP：MySQL 首次启动时有一个只听本地 socket 的临时实例，用 localhost 会"假健康"
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -P 3306 --protocol=tcp -uopspilot -p$${MYSQL_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  # ---- 三个模拟业务系统（Python FastAPI，沿用原项目代码）----
+  procure-hub:
+    build: {context: ., dockerfile: mock_apps/Dockerfile}
+    image: opspilot-mock-apps:local
+    container_name: opspilot-procure-hub
+    command: ["uvicorn", "mock_apps.procurement.app:app", "--host", "0.0.0.0", "--port", "8101"]
+    ports: ["127.0.0.1:8101:8101"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  invoice-center:
+    build: {context: ., dockerfile: mock_apps/Dockerfile}
+    image: opspilot-mock-apps:local
+    container_name: opspilot-invoice-center
+    command: ["uvicorn", "mock_apps.invoice.app:app", "--host", "0.0.0.0", "--port", "8102"]
+    ports: ["127.0.0.1:8102:8102"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8102/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  finance-flow:
+    build: {context: ., dockerfile: mock_apps/Dockerfile}
+    image: opspilot-mock-apps:local
+    container_name: opspilot-finance-flow
+    command: ["uvicorn", "mock_apps.finance.app:app", "--host", "0.0.0.0", "--port", "8103"]
+    ports: ["127.0.0.1:8103:8103"]
+    environment:
+      # 付款记录存到 SQLite 文件（挂卷），重启财务系统后还在
+      FINANCE_DATABASE_URL: sqlite+aiosqlite:////data/finance.db
+    volumes:
+      - finance-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8103/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---- 控制面（本项目）----
+  opspilot:
+    build: {context: ., dockerfile: Dockerfile}
+    container_name: opspilot-app
+    ports:
+      - "8090:8080"
+    environment:
+      - TZ=Asia/Shanghai
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-opspilot123}
+      - PROCUREMENT_URL=http://procure-hub:8101
+      - INVOICE_URL=http://invoice-center:8102
+      - FINANCE_URL=http://finance-flow:8103
+      # 本地演示打开故障注入（POST /chaos/drop-submit-response）
+      - CHAOS_ENABLED=${CHAOS_ENABLED:-true}
+    depends_on:
+      mysql: {condition: service_healthy}
+      procure-hub: {condition: service_healthy}
+      invoice-center: {condition: service_healthy}
+      finance-flow: {condition: service_healthy}
+
+volumes:
+  mysql-data:
+  finance-data:
