@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import os
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
@@ -30,7 +31,8 @@ class PaymentCreate(BaseModel):
     po_number: str
     invoice_id: str
     supplier: str
-    amount: int = Field(gt=0)
+    # Java 版 P4：金额精确到分
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
     cost_center: str
     reason: str
 

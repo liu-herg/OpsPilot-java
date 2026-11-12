@@ -1,5 +1,7 @@
 package com.opspilot.gateway;
 
-public record PaymentRequest(String poNumber, String invoiceId, String supplier, long amount,
+import java.math.BigDecimal;
+
+public record PaymentRequest(String poNumber, String invoiceId, String supplier, BigDecimal amount,
                              String costCenter, String reason) {
 }

@@ -20,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.Optional;
@@ -122,7 +123,7 @@ public class PaymentSubmitter {
             SubmitResult result;
             try {
                 result = gateway.submitPayment(new PaymentRequest(po, invoiceId, (String) data.get("supplier"),
-                        ((Number) data.get("amount")).longValue(), COST_CENTER, REASON));
+                        new BigDecimal(String.valueOf(data.get("amount"))), COST_CENTER, REASON));
             } catch (SubmitException e) {
                 handleSubmitFailure(runId, owner, retries, key, e);
                 return;

@@ -16,14 +16,12 @@ import java.net.http.HttpConnectTimeoutException;
 import java.time.Duration;
 import java.util.Optional;
 
-/** 通过 HTTP JSON 接口访问业务系统。每个请求都有连接超时和读超时，不会无限等待。 */
+/** 通过 HTTP JSON 接口访问财务系统。每个请求都有连接超时和读超时，不会无限等待。 */
 @Component
 public class HttpBusinessSystemGateway implements BusinessSystemGateway {
 
     private static final Logger log = LoggerFactory.getLogger(HttpBusinessSystemGateway.class);
 
-    private final RestClient procurement;
-    private final RestClient invoices;
     private final RestClient finance;
     private final ChaosSwitch chaos;
 
@@ -37,20 +35,8 @@ public class HttpBusinessSystemGateway implements BusinessSystemGateway {
         JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
         factory.setReadTimeout(Duration.ofMillis(systems.readTimeoutMs()));
         RestClient.Builder base = builder.requestFactory(factory);
-        this.procurement = base.clone().baseUrl(systems.procurementUrl()).build();
-        this.invoices = base.clone().baseUrl(systems.invoiceUrl()).build();
         this.finance = base.clone().baseUrl(systems.financeUrl()).build();
         this.chaos = chaos;
-    }
-
-    @Override
-    public Optional<PurchaseOrder> findOrder(String poNumber) {
-        return get(procurement, "采购系统", PurchaseOrder.class, "/api/orders/{po}", poNumber);
-    }
-
-    @Override
-    public Optional<Invoice> findInvoiceByPo(String poNumber) {
-        return get(invoices, "发票系统", Invoice.class, "/api/invoices/by-po/{po}", poNumber);
     }
 
     @Override

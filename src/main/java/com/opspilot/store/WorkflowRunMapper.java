@@ -70,17 +70,26 @@ public interface WorkflowRunMapper extends BaseMapper<WorkflowRunEntity> {
      * 恢复扫描第一步：找出"该有人执行、但现在没人在执行"的运行并加锁。
      * SKIP LOCKED：别的实例正在领的行直接跳过，多个实例同时扫描时各领各的，不会互相等待。
      * 必须在事务里调用，第二步 {@link #leaseLocked} 在同一个事务里把它们标记为自己的。
+     *
+     * <p>graceSeconds（MQ 派发时 &gt; 0）：刚写过派发消息的运行先不碰，它多半正在 RabbitMQ 里排队、马上会被消费者领走；
+     * 不加这个条件，扫描会把"排队中"误认为"没人管"，和消费者抢活。过了宽限期还没人领（MQ 挂了、消息放弃了），扫描再接手。
+     * 有 retry_at 的运行不受影响：它是执行者自己安排的重试，不在 MQ 里。
+     * 子查询不加锁（FOR UPDATE OF r 只锁 workflow_run）。
      */
     @Select("""
-            SELECT id FROM workflow_run
-            WHERE status IN ('RUNNING', 'READY_TO_SUBMIT')
-              AND (lease_owner IS NULL OR lease_expires_at <= NOW(3))
-              AND (retry_at IS NULL OR retry_at <= NOW(3))
-            ORDER BY updated_at
+            SELECT r.id FROM workflow_run r
+            WHERE r.status IN ('RUNNING', 'READY_TO_SUBMIT')
+              AND (r.lease_owner IS NULL OR r.lease_expires_at <= NOW(3))
+              AND (r.retry_at IS NULL OR r.retry_at <= NOW(3))
+              AND (r.retry_at IS NOT NULL OR NOT EXISTS (
+                    SELECT 1 FROM outbox_message o
+                    WHERE o.message_key = r.id
+                      AND o.created_at > DATE_SUB(NOW(3), INTERVAL #{graceSeconds} SECOND)))
+            ORDER BY r.updated_at
             LIMIT #{limit}
-            FOR UPDATE SKIP LOCKED
+            FOR UPDATE OF r SKIP LOCKED
             """)
-    List<String> lockClaimable(@Param("limit") int limit);
+    List<String> lockClaimable(@Param("limit") int limit, @Param("graceSeconds") int graceSeconds);
 
     @Update("""
             <script>

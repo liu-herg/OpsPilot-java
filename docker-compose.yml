@@ -2,6 +2,7 @@
 name: opspilot
 
 # 端口避开 PrismDesk（3316 / 6380 / 8002 / 8080 / 8081 / 9091），两个项目可以同时运行
+# 第二个控制面实例（opspilot-2）默认不启动，演示多实例时：docker compose --profile multi up -d opspilot-2
 services:
   mysql:
     image: mysql:8.4
@@ -25,31 +26,30 @@ services:
       retries: 30
       start_period: 20s
 
-  # ---- 三个模拟业务系统（Python FastAPI，沿用原项目代码）----
-  procure-hub:
-    build: {context: ., dockerfile: mock_apps/Dockerfile}
-    image: opspilot-mock-apps:local
-    container_name: opspilot-procure-hub
-    command: ["uvicorn", "mock_apps.procurement.app:app", "--host", "0.0.0.0", "--port", "8101"]
-    ports: ["127.0.0.1:8101:8101"]
+  # ---- 消息队列（P3：派发运行）----
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: opspilot-rabbitmq
+    # RabbitMQ 的数据目录按节点名（rabbit@主机名）存放，主机名固定，重建容器后消息还在
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: opspilot
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-opspilot123}
+    ports:
+      - "127.0.0.1:5673:5672"
+      # 管理界面：http://127.0.0.1:15673（opspilot / opspilot123）
+      - "127.0.0.1:15673:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/health')"]
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
-      timeout: 3s
-      retries: 20
+      timeout: 5s
+      retries: 30
+      start_period: 15s
 
-  invoice-center:
-    build: {context: ., dockerfile: mock_apps/Dockerfile}
-    image: opspilot-mock-apps:local
-    container_name: opspilot-invoice-center
-    command: ["uvicorn", "mock_apps.invoice.app:app", "--host", "0.0.0.0", "--port", "8102"]
-    ports: ["127.0.0.1:8102:8102"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8102/health')"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
+  # ---- 外部财务系统（Python FastAPI 模拟，沿用原项目代码）----
+  # P4 起采购单和发票是系统内部数据，原来的采购（procure-hub）、发票（invoice-center）两个模拟服务已下线
   finance-flow:
     build: {context: ., dockerfile: mock_apps/Dockerfile}
     image: opspilot-mock-apps:local
@@ -70,27 +70,51 @@ services:
   # ---- 控制面（本项目）----
   opspilot:
     build: {context: ., dockerfile: Dockerfile}
+    image: opspilot-app:local
     container_name: opspilot-app
     # 进程崩溃后自动重启（演示"付款后崩溃 → 重启 → 自动恢复"）
     restart: unless-stopped
     ports:
       - "8090:8080"
-    environment:
-      - TZ=Asia/Shanghai
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-opspilot123}
-      - PROCUREMENT_URL=http://procure-hub:8101
-      - INVOICE_URL=http://invoice-center:8102
-      - FINANCE_URL=http://finance-flow:8103
-      # 本地演示打开故障注入（POST /chaos/drop-submit-response）
-      - CHAOS_ENABLED=${CHAOS_ENABLED:-true}
-    depends_on:
+    environment: &app-env
+      TZ: Asia/Shanghai
+      INSTANCE_ID: app-1
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-opspilot123}
+      FINANCE_URL: http://finance-flow:8103
+      # 派发走 RabbitMQ
+      DISPATCH_MODE: mq
+      # 消息在队列里排队期间，恢复扫描不去抢（超过 15 秒还没人领再兜底）
+      DISPATCH_SCAN_GRACE_SECONDS: "15"
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-opspilot123}
+      # 第一次启动时写入演示数据（PO-10001 ~ PO-10004 的整条单据链）
+      DEMO_DATA: "true"
+      # 本地演示打开故障注入（POST /chaos/...）
+      CHAOS_ENABLED: ${CHAOS_ENABLED:-true}
+    depends_on: &app-deps
       mysql: {condition: service_healthy}
-      procure-hub: {condition: service_healthy}
-      invoice-center: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
       finance-flow: {condition: service_healthy}
+
+  # 第二个实例：同一个镜像、同一个库、同一个队列，演示多实例分摊执行
+  opspilot-2:
+    image: opspilot-app:local
+    container_name: opspilot-app-2
+    profiles: ["multi"]
+    restart: unless-stopped
+    ports:
+      - "8091:8080"
+    environment:
+      <<: *app-env
+      INSTANCE_ID: app-2
+    depends_on:
+      <<: *app-deps
+      opspilot: {condition: service_started}
 
 volumes:
   mysql-data:
   finance-data:
+  rabbitmq-data:

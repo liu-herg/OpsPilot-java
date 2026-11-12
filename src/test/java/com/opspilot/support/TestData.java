@@ -17,6 +17,7 @@ public final class TestData {
 
     public static void cleanup(JdbcTemplate jdbc, Collection<String> poNumbers) {
         for (String po : poNumbers) {
+            jdbc.update("DELETE o FROM outbox_message o JOIN workflow_run r ON r.id = o.message_key WHERE r.po_number = ?", po);
             jdbc.update("DELETE e FROM run_event e JOIN workflow_run r ON r.id = e.run_id WHERE r.po_number = ?", po);
             jdbc.update("DELETE a FROM approval a JOIN workflow_run r ON r.id = a.run_id WHERE r.po_number = ?", po);
             jdbc.update("DELETE FROM workflow_run WHERE po_number = ?", po);

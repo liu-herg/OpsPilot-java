@@ -24,7 +24,8 @@ import java.util.UUID;
  * 后台执行者：先抢执行租约，再把运行交给线程池执行，执行完释放租约。
  *
  * <ul>
- *   <li>立即执行：启动、审批通过、手动继续之后调 {@link #dispatch}（按 id 抢租约）</li>
+ *   <li>本地派发（dispatch.mode=local）：发件箱投递器调 {@link #dispatch}，按 id 抢租约后交给线程池</li>
+ *   <li>MQ 派发（dispatch.mode=mq）：消费者在自己的线程里调 {@link #executeNow}</li>
  *   <li>故障恢复：{@link RecoveryScheduler} 定时调 {@link #recoverOnce}，
  *       用 {@code FOR UPDATE SKIP LOCKED} 批量领取"没人在执行"的运行（多实例各领各的）</li>
  * </ul>
@@ -43,6 +44,7 @@ public class RunWorker {
     private final String instanceId;
     private final int leaseSeconds;
     private final int batchSize;
+    private final int scanGraceSeconds;
     private final Counter recovered;
 
     public RunWorker(WorkflowRunMapper runMapper, RunExecutor executor, EventService events,
@@ -59,6 +61,9 @@ public class RunWorker {
         this.instanceId = resolveInstanceId(properties.worker().instanceId());
         this.leaseSeconds = properties.worker().leaseSeconds();
         this.batchSize = properties.worker().batchSize();
+        // 只有 MQ 派发才有"消息在队列里排队"这段时间；本地派发是先抢租约再进线程池，不需要宽限期
+        this.scanGraceSeconds = "mq".equals(properties.dispatch().mode())
+                ? properties.dispatch().scanGraceSeconds() : 0;
         this.recovered = Counter.builder("opspilot.runs.recovered")
                 .description("被恢复扫描接手的运行数")
                 .register(meterRegistry);
@@ -81,6 +86,32 @@ public class RunWorker {
         return true;
     }
 
+    /** {@link #executeNow} 的结果。 */
+    public enum ExecuteOutcome {
+        /** 抢到租约并执行完（推进到下一个稳定状态） */
+        EXECUTED,
+        /** 没抢到租约：别人正在执行，或者运行已经结束（重复消息） */
+        SKIPPED,
+        /** 运行不存在（坏消息） */
+        NOT_FOUND
+    }
+
+    /**
+     * 在<b>当前线程</b>抢租约并执行（MQ 消费者用）。和 {@link #dispatch} 的区别：不交给线程池，
+     * 执行完才返回，消费者执行完再确认消息；消费者并发数就是执行并发数，消息没被领走之前一直留在 MQ 里。
+     *
+     * <p>重复消息（投递器重投、MQ 重新投递）在这里被挡住：抢租约是条件更新，
+     * 运行已经结束或正在被执行时抢不到，直接跳过。
+     */
+    public ExecuteOutcome executeNow(String runId, String by) {
+        if (runMapper.claimLease(runId, instanceId, leaseSeconds) == 0) {
+            return runMapper.selectById(runId) == null ? ExecuteOutcome.NOT_FOUND : ExecuteOutcome.SKIPPED;
+        }
+        events.append(runId, "run.picked_up", JsonCodec.fields("instance", instanceId, "by", by));
+        runClaimed(runId);
+        return ExecuteOutcome.EXECUTED;
+    }
+
     /** 恢复扫描一轮：领一批"该有人执行但没人在执行"的运行，交给线程池。返回领到的数量。 */
     public int recoverOnce() {
         List<String> ids = claimBatch(instanceId, batchSize);
@@ -99,7 +130,7 @@ public class RunWorker {
     /** 以 owner 的身份批量领取租约（"查出来 + 标记为我的"在一个事务里）。public 是为了测试里模拟多个实例。 */
     public List<String> claimBatch(String owner, int limit) {
         List<String> ids = claimTx.execute(s -> {
-            List<String> locked = runMapper.lockClaimable(limit);
+            List<String> locked = runMapper.lockClaimable(limit, scanGraceSeconds);
             if (!locked.isEmpty()) {
                 runMapper.leaseLocked(locked, owner, leaseSeconds);
             }

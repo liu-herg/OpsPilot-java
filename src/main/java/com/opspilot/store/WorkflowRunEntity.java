@@ -14,6 +14,9 @@ public class WorkflowRunEntity {
     private String id;
     private String taskId;
     private String poNumber;
+    /** P4：执行的是哪张发票、哪张付款单（P1~P3 的测试运行没有，为空） */
+    private String invoiceNumber;
+    private Long paymentOrderId;
     private String status;
     private String currentStep;
     private String data;
@@ -63,4 +66,9 @@ public class WorkflowRunEntity {
     public void setStartedAt(LocalDateTime startedAt) { this.startedAt = startedAt; }
     public LocalDateTime getFinishedAt() { return finishedAt; }
     public void setFinishedAt(LocalDateTime finishedAt) { this.finishedAt = finishedAt; }
+
+    public String getInvoiceNumber() { return invoiceNumber; }
+    public void setInvoiceNumber(String invoiceNumber) { this.invoiceNumber = invoiceNumber; }
+    public Long getPaymentOrderId() { return paymentOrderId; }
+    public void setPaymentOrderId(Long paymentOrderId) { this.paymentOrderId = paymentOrderId; }
 }

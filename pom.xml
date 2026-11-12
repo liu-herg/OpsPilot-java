@@ -69,6 +69,12 @@
             <artifactId>flyway-mysql</artifactId>
         </dependency>
 
+        <!-- P3：消息队列（RabbitMQ），派发运行用 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>

@@ -49,7 +49,9 @@ class RunStatusTest {
         RunStore store = new RunStore(null, new OpsPilotProperties(
                 new OpsPilotProperties.Systems("", "", "", 1000, 1000), 10000, 30,
                 new OpsPilotProperties.Chaos(false),
-                new OpsPilotProperties.Worker("", 60, 5000, 10, 4, 5)));
+                new OpsPilotProperties.Worker("", 60, 5000, 10, 4, 5),
+                new OpsPilotProperties.Dispatch("local", 1000, 50, 30, 20, 5000, 7, 15)), event -> {
+        });
         assertThatThrownBy(() -> store.transition("run-x", RunStatus.WAITING_APPROVAL, RunUpdate.to(RunStatus.COMPLETED)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("WAITING_APPROVAL -> COMPLETED");

@@ -2,13 +2,15 @@ package com.opspilot.support;
 
 import com.opspilot.gateway.BusinessSystemGateway;
 import com.opspilot.gateway.Invoice;
+import com.opspilot.gateway.Payable;
+import com.opspilot.gateway.PayableSource;
 import com.opspilot.gateway.Payment;
 import com.opspilot.gateway.PaymentRequest;
-import com.opspilot.gateway.PurchaseOrder;
 import com.opspilot.gateway.SubmitException;
 import com.opspilot.gateway.SubmitResult;
 import com.opspilot.gateway.UpstreamUnavailableException;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -18,10 +20,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 测试用业务系统。注意它的财务系统故意<b>不做</b>幂等：每次 POST 都新建一笔付款。
+ * 测试用业务系统：既是付款依据的来源（{@link PayableSource}），也是财务系统（{@link BusinessSystemGateway}）。
+ * 注意它的财务系统故意<b>不做</b>幂等：每次 POST 都新建一笔付款。
  * 这样"只付了一笔"完全是控制面自己保证的，而不是靠对方去重。
+ * P4 的端到端测试用真实的 LedgerPayableSource（@Primary）读内部单据，这里只当财务系统用。
  */
-public class FakeGateway implements BusinessSystemGateway {
+public class FakeGateway implements BusinessSystemGateway, PayableSource {
 
     public enum Failure {
         /** 连接失败，请求没到达 */
@@ -32,7 +36,7 @@ public class FakeGateway implements BusinessSystemGateway {
         REJECTED
     }
 
-    private record Fixture(PurchaseOrder order, Invoice invoice) {
+    private record Fixture(Payable order, Invoice invoice) {
     }
 
     private final Map<String, Fixture> fixtures = new ConcurrentHashMap<>();
@@ -46,8 +50,8 @@ public class FakeGateway implements BusinessSystemGateway {
     public String addCase(String po, String supplier, long orderAmount, long invoiceAmount) {
         String invoiceId = "INV-" + po.substring(3);
         fixtures.put(po, new Fixture(
-                new PurchaseOrder(po, supplier, orderAmount, "CNY", "Delivered"),
-                new Invoice(invoiceId, po, supplier, invoiceAmount, "Valid")));
+                new Payable(po, invoiceId, supplier, BigDecimal.valueOf(orderAmount), "CNY", true),
+                new Invoice(invoiceId, po, supplier, BigDecimal.valueOf(invoiceAmount), "Valid")));
         return invoiceId;
     }
 
@@ -76,7 +80,7 @@ public class FakeGateway implements BusinessSystemGateway {
     }
 
     @Override
-    public Optional<PurchaseOrder> findOrder(String poNumber) {
+    public Optional<Payable> findPayable(String poNumber, String invoiceNumber) {
         AtomicInteger failures = readFailures.get(poNumber);
         if (failures != null && failures.getAndUpdate(n -> n > 0 ? n - 1 : 0) > 0) {
             throw new UpstreamUnavailableException("fake: 采购系统不可用", null);
@@ -85,7 +89,7 @@ public class FakeGateway implements BusinessSystemGateway {
     }
 
     @Override
-    public Optional<Invoice> findInvoiceByPo(String poNumber) {
+    public Optional<Invoice> findInvoice(String poNumber, String invoiceNumber) {
         return Optional.ofNullable(fixtures.get(poNumber)).map(Fixture::invoice);
     }
 

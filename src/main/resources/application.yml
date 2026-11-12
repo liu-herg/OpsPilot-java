@@ -21,6 +21,30 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+  # P3：RabbitMQ（opspilot.dispatch.mode=mq 时使用）
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:opspilot}
+    password: ${RABBITMQ_PASSWORD:opspilot123}
+    # 连不上时快速失败，不让投递线程卡 60 秒（默认值）
+    connection-timeout: 3s
+    # 发送方确认：broker 持久化后回 ack，投递器等到 ack 才把发件箱标记为已投递
+    publisher-confirm-type: correlated
+    # 消息路由不到队列时退回给发送方，而不是被悄悄丢弃
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        # 方法正常返回才 ack；抛异常则拒绝且不重新入队（进死信队列），避免坏消息无限重投
+        acknowledge-mode: auto
+        default-requeue-rejected: false
+        # 每个消费者一次只拿 1 条：没开始执行的消息留在 MQ，实例之间按处理能力分摊
+        prefetch: 1
+        # 消费者数 = 执行并发数
+        concurrency: ${WORKER_THREADS:4}
+        max-concurrency: ${WORKER_THREADS:4}
   jackson:
     property-naming-strategy: SNAKE_CASE
     default-property-inclusion: non_null
@@ -32,13 +56,16 @@ mybatis-plus:
     banner: false
 
 opspilot:
-  # 三个被自动化的业务系统（模拟）：采购、发票、财务
+  # 外部财务系统（模拟）。P4 起采购单、发票是内部数据，procurement-url / invoice-url 不再使用
   systems:
-    procurement-url: ${PROCUREMENT_URL:http://localhost:8101}
-    invoice-url: ${INVOICE_URL:http://localhost:8102}
     finance-url: ${FINANCE_URL:http://localhost:8103}
     connect-timeout-ms: 2000
     read-timeout-ms: 5000
+  # 第一次启动时写入演示数据（docker compose 里打开）
+  demo-data: ${DEMO_DATA:false}
+  # 三单匹配：发票单价和订单单价的允许偏差（0.01 = 1%）
+  match:
+    price-tolerance: ${MATCH_PRICE_TOLERANCE:0.01}
   # 金额超过阈值的付款需要人工审批
   approval-threshold: ${APPROVAL_THRESHOLD:10000}
   # 付款幂等租约：持有者在租约内崩溃，租约过期后其他执行者才能接手
@@ -51,6 +78,17 @@ opspilot:
     batch-size: 10
     threads: ${WORKER_THREADS:4}
     max-read-retries: 5
+  # 派发：local = 本实例线程池（不需要 MQ）；mq = 投递到 RabbitMQ，所有实例一起消费
+  dispatch:
+    mode: ${DISPATCH_MODE:local}
+    relay-poll-ms: ${OUTBOX_POLL_MS:1000}
+    relay-batch-size: 50
+    claim-seconds: 30
+    max-attempts: 20
+    confirm-timeout-ms: 5000
+    retention-days: 7
+    # MQ 派发时：消息在队列里排队期间，恢复扫描不去抢；超过这个时间还没人领，扫描再接手
+    scan-grace-seconds: ${DISPATCH_SCAN_GRACE_SECONDS:15}
   # 故障注入（演示"响应丢失后对账"、"付款后进程崩溃"），生产环境不要开
   chaos:
     enabled: ${CHAOS_ENABLED:false}
@@ -60,6 +98,10 @@ springdoc:
     path: /v3/api-docs
 
 management:
+  health:
+    # MQ 不是硬依赖：MQ 挂了运行照样能由恢复扫描执行，所以不让它把整个应用的健康检查拖成 DOWN
+    rabbit:
+      enabled: false
   endpoints:
     web:
       exposure:

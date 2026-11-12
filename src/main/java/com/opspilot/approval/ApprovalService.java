@@ -3,12 +3,13 @@ package com.opspilot.approval;
 import com.opspilot.api.ConflictException;
 import com.opspilot.api.NotFoundException;
 import com.opspilot.config.JsonCodec;
+import com.opspilot.dispatch.OutboxRelay;
+import com.opspilot.dispatch.OutboxService;
 import com.opspilot.event.EventService;
 import com.opspilot.run.RunService;
 import com.opspilot.run.RunStatus;
 import com.opspilot.run.RunStore;
 import com.opspilot.run.RunUpdate;
-import com.opspilot.run.RunWorker;
 import com.opspilot.store.ApprovalEntity;
 import com.opspilot.store.ApprovalMapper;
 import org.springframework.stereotype.Service;
@@ -28,6 +29,7 @@ import static com.opspilot.config.JsonCodec.fields;
  *   <li>和已有决定相反（已批准又来驳回）：返回 409</li>
  * </ul>
  * 批准后的付款在事务提交之后交给后台执行：付款是远程调用，不能在事务里做；接口也不用等它。
+ * "要派发这个运行"写进发件箱，和审批结果同一个事务，提交后再投递。
  */
 @Service
 public class ApprovalService {
@@ -35,18 +37,20 @@ public class ApprovalService {
     private final ApprovalMapper approvalMapper;
     private final RunStore runStore;
     private final EventService events;
-    private final RunWorker worker;
+    private final OutboxService outbox;
+    private final OutboxRelay relay;
     private final RunService runService;
     private final TransactionTemplate tx;
     private final JsonCodec json;
 
     public ApprovalService(ApprovalMapper approvalMapper, RunStore runStore, EventService events,
-                           RunWorker worker, RunService runService,
+                           OutboxService outbox, OutboxRelay relay, RunService runService,
                            TransactionTemplate tx, JsonCodec json) {
         this.approvalMapper = approvalMapper;
         this.runStore = runStore;
         this.events = events;
-        this.worker = worker;
+        this.outbox = outbox;
+        this.relay = relay;
         this.runService = runService;
         this.tx = tx;
         this.json = json;
@@ -68,8 +72,9 @@ public class ApprovalService {
         Resolution r = tx.execute(s -> resolveInTransaction(approvalId, decision, actor.trim()));
         String runId = r.approval().getRunId();
         if (r.outcome() == DecisionOutcome.RESOLVED && decision == Decision.APPROVE) {
-            // 事务已提交，审批结果已经落库；交出去之后进程崩溃也没关系，READY_TO_SUBMIT 会被恢复扫描接手
-            worker.dispatch(runId);
+            // 事务已提交，审批结果和派发消息都已经落库；投递之前进程崩溃也没关系，
+            // 定时投递会补发，READY_TO_SUBMIT 也会被恢复扫描接手
+            relay.kick();
         }
         return new DecisionResult(r.outcome(), ApprovalView.of(approvalMapper.selectById(approvalId), json),
                 runService.get(runId));
@@ -105,6 +110,8 @@ public class ApprovalService {
                 fields("approval_id", approvalId, "actor", actor));
         if (decision == Decision.REJECT) {
             events.append(approval.getRunId(), "run.rejected", fields("approval_id", approvalId, "actor", actor));
+        } else {
+            outbox.enqueueDispatch(approval.getRunId(), "approval.approved");
         }
         return new Resolution(approval, DecisionOutcome.RESOLVED);
     }

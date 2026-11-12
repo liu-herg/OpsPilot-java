@@ -1,5 +1,7 @@
 package com.opspilot.gateway;
 
-/** 发票系统返回的发票。 */
-public record Invoice(String invoiceId, String poId, String supplier, long amount, String status) {
+import java.math.BigDecimal;
+
+/** 发票（amount 为价税合计，即应付金额）。 */
+public record Invoice(String invoiceId, String poId, String supplier, BigDecimal amount, String status) {
 }

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, Integer, String, UniqueConstraint, delete, select
+from sqlalchemy import JSON, Integer, Numeric, String, UniqueConstraint, delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncAttrs,
@@ -27,7 +28,7 @@ class PaymentRequestRecord(Base):
     po_number: Mapped[str] = mapped_column(String(80), index=True)
     invoice_id: Mapped[str] = mapped_column(String(80), index=True)
     supplier: Mapped[str] = mapped_column(String(200))
-    amount: Mapped[int] = mapped_column(Integer)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     cost_center: Mapped[str] = mapped_column(String(120))
     reason: Mapped[str] = mapped_column(String(1000))
     status: Mapped[str] = mapped_column(String(40), default="Submitted")

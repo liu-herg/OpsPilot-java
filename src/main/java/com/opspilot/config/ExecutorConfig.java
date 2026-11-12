@@ -5,6 +5,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import java.util.concurrent.ThreadPoolExecutor;
+
 @Configuration
 @EnableScheduling
 public class ExecutorConfig {
@@ -24,6 +26,24 @@ public class ExecutorConfig {
         executor.setThreadNamePrefix("run-worker-");
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(30);
+        return executor;
+    }
+
+    /**
+     * 发件箱即时投递的线程：1 个线程、队列长度 1，满了直接丢弃（DiscardPolicy）。
+     * 投递一轮会把所有到期的消息都领走，所以"正在投递 + 排队一轮"就够了，
+     * 再多的触发都是重复劳动；万一真漏了，定时扫描每秒还会兜底一次。
+     */
+    @Bean("outboxRelayExecutor")
+    public ThreadPoolTaskExecutor outboxRelayExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(1);
+        executor.setQueueCapacity(1);
+        executor.setThreadNamePrefix("outbox-relay-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.DiscardPolicy());
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(10);
         return executor;
     }
 }

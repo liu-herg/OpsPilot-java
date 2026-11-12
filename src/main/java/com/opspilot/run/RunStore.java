@@ -2,6 +2,7 @@ package com.opspilot.run;
 
 import com.opspilot.config.OpsPilotProperties;
 import com.opspilot.store.WorkflowRunMapper;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -12,10 +13,12 @@ public class RunStore {
 
     private final WorkflowRunMapper runMapper;
     private final int leaseSeconds;
+    private final ApplicationEventPublisher publisher;
 
-    public RunStore(WorkflowRunMapper runMapper, OpsPilotProperties properties) {
+    public RunStore(WorkflowRunMapper runMapper, OpsPilotProperties properties, ApplicationEventPublisher publisher) {
         this.runMapper = runMapper;
         this.leaseSeconds = properties.worker().leaseSeconds();
+        this.publisher = publisher;
     }
 
     /**
@@ -31,7 +34,12 @@ public class RunStore {
         if (update.getLeaseOwner() != null) {
             update.leaseSeconds(leaseSeconds);
         }
-        return runMapper.compareAndSet(runId, from, update) == 1;
+        boolean changed = runMapper.compareAndSet(runId, from, update) == 1;
+        if (changed && update.getStatus().isTerminal()) {
+            // 同步发布：监听者在当前事务里执行（付款单 PAID / FAILED 和运行终态一起提交）
+            publisher.publishEvent(new RunFinished(runId, update.getStatus()));
+        }
+        return changed;
     }
 
     /** 指数退避：5s、10s、20s … 最长 5 分钟。 */

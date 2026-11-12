@@ -3,9 +3,9 @@ package com.opspilot.run;
 import com.opspilot.config.JsonCodec;
 import com.opspilot.config.OpsPilotProperties;
 import com.opspilot.event.EventService;
-import com.opspilot.gateway.BusinessSystemGateway;
 import com.opspilot.gateway.Invoice;
-import com.opspilot.gateway.PurchaseOrder;
+import com.opspilot.gateway.Payable;
+import com.opspilot.gateway.PayableSource;
 import com.opspilot.gateway.UpstreamUnavailableException;
 import com.opspilot.store.ApprovalEntity;
 import com.opspilot.store.ApprovalMapper;
@@ -17,6 +17,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -29,7 +30,9 @@ import java.util.function.Supplier;
 import static com.opspilot.config.JsonCodec.fields;
 
 /**
- * 发票付款流程的执行逻辑：查采购单 → 查发票 → 校验一致 → 策略（大额走审批）→ 提交付款。
+ * 付款流程的执行逻辑：取付款依据 → 取发票 → 复核一致 → 策略（大额走审批）→ 提交付款。
+ * P4 起付款依据是系统内部的付款单（三单匹配在登记发票时已经做过），这里是付款前的最后一次复核：
+ * 付款单和发票的供应商、金额必须一致，供应商不能被冻结。
  * 只由 {@link RunWorker} 在持有执行租约时调用；所有状态转移都带上租约持有者（fencing）。
  *
  * <p>崩溃恢复靠"可以安全重放"：RUNNING 状态的运行被接手后从头执行，
@@ -47,7 +50,7 @@ public class RunExecutor {
     private final ApprovalMapper approvalMapper;
     private final RunStore runStore;
     private final EventService events;
-    private final BusinessSystemGateway gateway;
+    private final PayableSource payables;
     private final PaymentSubmitter paymentSubmitter;
     private final TransactionTemplate tx;
     private final JsonCodec json;
@@ -55,13 +58,13 @@ public class RunExecutor {
     private final int maxReadRetries;
 
     public RunExecutor(WorkflowRunMapper runMapper, ApprovalMapper approvalMapper, RunStore runStore,
-                       EventService events, BusinessSystemGateway gateway, PaymentSubmitter paymentSubmitter,
+                       EventService events, PayableSource payables, PaymentSubmitter paymentSubmitter,
                        TransactionTemplate tx, JsonCodec json, OpsPilotProperties properties) {
         this.runMapper = runMapper;
         this.approvalMapper = approvalMapper;
         this.runStore = runStore;
         this.events = events;
-        this.gateway = gateway;
+        this.payables = payables;
         this.paymentSubmitter = paymentSubmitter;
         this.tx = tx;
         this.json = json;
@@ -87,7 +90,7 @@ public class RunExecutor {
     private void executeSteps(WorkflowRunEntity run, String owner) {
         String runId = run.getId();
         try {
-            steps(runId, run.getPoNumber(), owner);
+            steps(runId, run.getPoNumber(), run.getInvoiceNumber(), owner);
         } catch (UpstreamUnavailableException e) {
             retryLaterOrFail(run, owner, e.getMessage());
         } catch (StepAborted e) {
@@ -117,46 +120,50 @@ public class RunExecutor {
         });
     }
 
-    private void steps(String runId, String po, String owner) {
-        PurchaseOrder order = step(runId, owner, "fetch_order", () -> gateway.findOrder(po));
-        if (order == null) {
-            fail(runId, RunStatus.RUNNING, owner, "NOT_FOUND", "采购系统里没有 " + po, Map.of());
+    private void steps(String runId, String po, String invoiceNumber, String owner) {
+        Payable payable = step(runId, owner, "fetch_order", () -> payables.findPayable(po, invoiceNumber));
+        if (payable == null) {
+            fail(runId, RunStatus.RUNNING, owner, "NOT_FOUND", "找不到 " + po + " 的付款依据", Map.of());
             return;
         }
-        Invoice invoice = step(runId, owner, "fetch_invoice", () -> gateway.findInvoiceByPo(po));
+        Invoice invoice = step(runId, owner, "fetch_invoice", () -> payables.findInvoice(po, invoiceNumber));
         if (invoice == null) {
-            fail(runId, RunStatus.RUNNING, owner, "NOT_FOUND", "发票系统里没有 " + po + " 对应的发票", Map.of());
+            fail(runId, RunStatus.RUNNING, owner, "NOT_FOUND", "找不到 " + po + " 对应的发票", Map.of());
             return;
         }
 
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("po_number", po);
         data.put("invoice_id", invoice.invoiceId());
-        data.put("supplier", order.supplier());
-        data.put("amount", order.amount());
-        data.put("currency", order.currency());
+        data.put("supplier", payable.supplier());
+        data.put("amount", payable.amount());
+        data.put("currency", payable.currency());
 
-        // 校验：采购单和发票的供应商、金额必须一致
+        // 复核：付款依据和发票的供应商、金额必须一致；供应商不能被冻结
         enterStep(runId, owner, "validate");
         List<Map<String, Object>> mismatches = new ArrayList<>();
-        if (!Objects.equals(order.supplier(), invoice.supplier())) {
-            mismatches.add(fields("field", "supplier", "order", order.supplier(), "invoice", invoice.supplier()));
+        if (!Objects.equals(payable.supplier(), invoice.supplier())) {
+            mismatches.add(fields("field", "supplier", "order", payable.supplier(), "invoice", invoice.supplier()));
         }
-        if (order.amount() != invoice.amount()) {
-            mismatches.add(fields("field", "amount", "order", order.amount(), "invoice", invoice.amount()));
+        if (payable.amount().compareTo(invoice.amount()) != 0) {
+            mismatches.add(fields("field", "amount", "order", payable.amount(), "invoice", invoice.amount()));
         }
         if (!po.equals(invoice.poId())) {
             mismatches.add(fields("field", "po_id", "order", po, "invoice", invoice.poId()));
         }
+        if (!payable.supplierActive()) {
+            mismatches.add(fields("field", "supplier_status", "order", "FROZEN", "invoice", payable.supplier()));
+        }
         if (!mismatches.isEmpty()) {
             data.put("mismatches", mismatches);
-            fail(runId, RunStatus.RUNNING, owner, "BUSINESS_VALIDATION_FAILED", "采购单与发票不一致", data);
+            fail(runId, RunStatus.RUNNING, owner, "BUSINESS_VALIDATION_FAILED",
+                    payable.supplierActive() ? "付款依据与发票不一致" : "供应商已冻结，不能付款", data);
             return;
         }
         events.append(runId, "step.completed", fields("step", "validate"));
 
         // 策略：大额付款必须人工审批
-        if (order.amount() > approvalThreshold) {
+        if (payable.amount().compareTo(BigDecimal.valueOf(approvalThreshold)) > 0) {
             requestApproval(runId, owner, data);
             return;
         }
@@ -166,7 +173,7 @@ public class RunExecutor {
                 return false;
             }
             events.append(runId, "policy.auto_approved",
-                    fields("amount", order.amount(), "threshold", approvalThreshold));
+                    fields("amount", payable.amount(), "threshold", approvalThreshold));
             return true;
         }));
         if (!ready) {
